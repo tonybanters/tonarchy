@@ -81,8 +81,13 @@ int create_directory(const char *path, mode_t mode) {
 
 int chroot_exec(const char *cmd) {
     char full_cmd[MAX_CMD_SIZE];
-    snprintf(full_cmd, sizeof(full_cmd), "arch-chroot %s /bin/bash -c '%s' >> /tmp/tonarchy-install.log 2>&1",
-             CHROOT_PATH, cmd);
+    snprintf(
+        full_cmd,
+        sizeof(full_cmd),
+        "arch-chroot %s /bin/bash -c '%s' >> /tmp/tonarchy-install.log 2>&1",
+        CHROOT_PATH,
+        cmd
+    );
 
     LOG_INFO("Executing in chroot: %s", cmd);
     LOG_DEBUG("Full command: %s", full_cmd);
@@ -156,8 +161,7 @@ int setup_systemd_override(const SystemdOverride *override) {
     char dir_path[1024];
     char file_path[2048];
 
-    snprintf(dir_path, sizeof(dir_path), "%s/etc/systemd/system/%s",
-             CHROOT_PATH, override->drop_in_dir);
+    snprintf(dir_path, sizeof(dir_path), "%s/etc/systemd/system/%s", CHROOT_PATH, override->drop_in_dir);
     snprintf(file_path, sizeof(file_path), "%s/%s", dir_path, override->drop_in_file);
 
     LOG_INFO("Setting up systemd override: %s/%s", override->drop_in_dir, override->drop_in_file);
