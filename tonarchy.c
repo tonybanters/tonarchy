@@ -365,13 +365,6 @@ void show_message(const char *message) {
     sleep(2);
 }
 
-typedef struct {
-    const char *label;
-    const char *value;
-    const char *default_display;
-    int is_password;
-} Tui_Field;
-
 static void draw_form(
         const char *username,
         const char *password,
@@ -428,6 +421,96 @@ static void draw_form(
     fflush(stdout);
 }
 
+static int validate_alphanumeric(const char *s) {
+    for (int i = 0; s[i]; i++) {
+        if (!isalnum(s[i]) && s[i] != '-' && s[i] != '_')
+            return 0;
+    }
+    return 1;
+}
+
+static int read_line(char *buf, int size, int echo) {
+    struct termios old_term;
+    tcgetattr(STDIN_FILENO, &old_term);
+    struct termios new_term = old_term;
+    if (echo)
+        new_term.c_lflag |= ECHO;
+    else
+        new_term.c_lflag &= ~ECHO;
+    new_term.c_lflag |= ICANON;
+    new_term.c_lflag &= ~ISIG;
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_term);
+
+    int result = (fgets(buf, size, stdin) != NULL);
+    if (result)
+        buf[strcspn(buf, "\n")] = '\0';
+
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
+    return result;
+}
+
+static int fzf_select(char *dest, const char *cmd, const char *default_val) {
+    clear_screen();
+    FILE *fp = popen(cmd, "r");
+    if (fp == NULL)
+        return 0;
+
+    char buf[256];
+    if (fgets(buf, sizeof(buf), fp) != NULL) {
+        buf[strcspn(buf, "\n")] = '\0';
+        if (strlen(buf) > 0)
+            strcpy(dest, buf);
+    }
+    pclose(fp);
+
+    if (strlen(dest) == 0 && default_val)
+        strcpy(dest, default_val);
+
+    return 1;
+}
+
+static int handle_password_entry(
+        char *password,
+        char *confirmed_password,
+        int form_row,
+        int logo_start,
+        char *username,
+        char *hostname,
+        char *keyboard,
+        char *timezone
+    ) {
+    char temp_input[256];
+    char password_confirm[256];
+
+    printf(ANSI_CURSOR_POS, form_row + 1, logo_start + 13);
+    fflush(stdout);
+
+    if (!read_line(temp_input, sizeof(temp_input), 0))
+        return -1;
+
+    if (strlen(temp_input) == 0) {
+        show_message("Password cannot be empty");
+        return 0;
+    }
+
+    strcpy(password, temp_input);
+
+    draw_form(username, password, confirmed_password, hostname, keyboard, timezone, 2);
+    printf(ANSI_CURSOR_POS, form_row + 2, logo_start + 20);
+    fflush(stdout);
+
+    if (!read_line(password_confirm, sizeof(password_confirm), 0))
+        return -1;
+
+    if (strcmp(password, password_confirm) == 0) {
+        strcpy(confirmed_password, password_confirm);
+        return 1;
+    } else {
+        show_message("Passwords do not match");
+        return 0;
+    }
+}
+
 static int get_form_input(
         char *username,
         char *password,
@@ -437,176 +520,61 @@ static int get_form_input(
         char *timezone
     ) {
     char temp_input[256];
-    char password_confirm[256];
-    int current_field = 0;
     int rows, cols;
     get_terminal_size(&rows, &cols);
     int logo_start = (cols - 70) / 2;
     int form_row = 12;
 
-    while (current_field < 6) {
+    Form_Field fields[] = {
+        {username, NULL,       INPUT_TEXT,         13, "Username must be alphanumeric"},
+        {password, NULL,       INPUT_PASSWORD,     13, NULL},
+        {confirmed_password, NULL, INPUT_PASSWORD, 20, NULL},
+        {hostname, "tonarchy", INPUT_TEXT,         13, "Hostname must be alphanumeric"},
+        {keyboard, "us",       INPUT_FZF_KEYMAP,   0,  NULL},
+        {timezone, NULL,       INPUT_FZF_TIMEZONE, 0,  "Timezone is required"},
+    };
+    int num_fields = (int)(sizeof(fields) / sizeof(fields[0]));
+
+    int current_field = 0;
+    while (current_field < num_fields) {
         draw_form(username, password, confirmed_password, hostname, keyboard, timezone, current_field);
+        Form_Field *f = &fields[current_field];
 
-        if (current_field == 0) {
-            printf("\033[%d;%dH", form_row, logo_start + 13);
-            fflush(stdout);
-
-            struct termios old_term;
-            tcgetattr(STDIN_FILENO, &old_term);
-            struct termios new_term = old_term;
-            new_term.c_lflag |= (ECHO | ICANON);
-            new_term.c_lflag &= ~ISIG;
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_term);
-
-            if (fgets(temp_input, sizeof(temp_input), stdin) == NULL) {
-                tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-                return 0;
-            }
-            temp_input[strcspn(temp_input, "\n")] = '\0';
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-
-            if (strlen(temp_input) > 0) {
-                int valid = 1;
-                for (int i = 0; temp_input[i]; i++) {
-                    if (!isalnum(temp_input[i]) && temp_input[i] != '-' && temp_input[i] != '_') {
-                        valid = 0;
-                        break;
-                    }
-                }
-                if (valid) {
-                    strcpy(username, temp_input);
-                    current_field++;
-                } else {
-                    show_message("Username must be alphanumeric");
-                }
-            }
-        } else if (current_field == 1) {
-            printf("\033[%d;%dH", form_row + 1, logo_start + 13);
-            fflush(stdout);
-
-            struct termios old_term;
-            tcgetattr(STDIN_FILENO, &old_term);
-            struct termios new_term = old_term;
-            new_term.c_lflag &= ~ECHO;
-            new_term.c_lflag |= ICANON;
-            new_term.c_lflag &= ~ISIG;
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_term);
-
-            if (fgets(temp_input, sizeof(temp_input), stdin) == NULL) {
-                tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-                return 0;
-            }
-            temp_input[strcspn(temp_input, "\n")] = '\0';
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-
-            if (strlen(temp_input) == 0) {
-                show_message("Password cannot be empty");
-                continue;
-            }
-
-            strcpy(password, temp_input);
+        if (f->type == INPUT_FZF_KEYMAP) {
+            fzf_select(keyboard, "localectl list-keymaps | fzf --height=40% --reverse --prompt='Keyboard: ' --header='Start typing to filter, Enter to select' --query='us'", "us");
             current_field++;
-        } else if (current_field == 2) {
-            printf("\033[%d;%dH", form_row + 2, logo_start + 20);
-            fflush(stdout);
-
-            struct termios old_term;
-            tcgetattr(STDIN_FILENO, &old_term);
-            struct termios new_term = old_term;
-            new_term.c_lflag &= ~ECHO;
-            new_term.c_lflag |= ICANON;
-            new_term.c_lflag &= ~ISIG;
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_term);
-
-            if (fgets(password_confirm, sizeof(password_confirm), stdin) == NULL) {
-                tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-                return 0;
-            }
-            password_confirm[strcspn(password_confirm, "\n")] = '\0';
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-
-            if (strcmp(password, password_confirm) == 0) {
-                strcpy(confirmed_password, password_confirm);
-                current_field++;
-            } else {
-                show_message("Passwords do not match");
-            }
-        } else if (current_field == 3) {
-            printf("\033[%d;%dH", form_row + 3, logo_start + 13);
-            fflush(stdout);
-
-            struct termios old_term;
-            tcgetattr(STDIN_FILENO, &old_term);
-            struct termios new_term = old_term;
-            new_term.c_lflag |= (ECHO | ICANON);
-            new_term.c_lflag &= ~ISIG;
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_term);
-
-            if (fgets(temp_input, sizeof(temp_input), stdin) == NULL) {
-                tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-                return 0;
-            }
-            temp_input[strcspn(temp_input, "\n")] = '\0';
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-
-            if (strlen(temp_input) == 0) {
-                strcpy(hostname, "tonarchy");
-            } else {
-                int valid = 1;
-                for (int i = 0; temp_input[i]; i++) {
-                    if (!isalnum(temp_input[i]) && temp_input[i] != '-' && temp_input[i] != '_') {
-                        valid = 0;
-                        break;
-                    }
-                }
-                if (valid) {
-                    strcpy(hostname, temp_input);
-                } else {
-                    show_message("Hostname must be alphanumeric");
-                    continue;
-                }
-            }
-            current_field++;
-        } else if (current_field == 4) {
-            clear_screen();
-            FILE *fp = popen("localectl list-keymaps | fzf --height=40% --reverse --prompt='Keyboard: ' --header='Start typing to filter, Enter to select' --query='us'", "r");
-            if (fp == NULL) {
-                show_message("Failed to open keyboard selector");
-                continue;
-            }
-
-            if (fgets(temp_input, sizeof(temp_input), fp) != NULL) {
-                temp_input[strcspn(temp_input, "\n")] = '\0';
-                if (strlen(temp_input) > 0) {
-                    strcpy(keyboard, temp_input);
-                }
-            }
-            pclose(fp);
-
-            if (strlen(keyboard) == 0) {
-                strcpy(keyboard, "us");
-            }
-            current_field++;
-        } else if (current_field == 5) {
-            clear_screen();
-            FILE *fp = popen("timedatectl list-timezones | fzf --height=40% --reverse --prompt='Timezone: ' --header='Type your city/timezone, Enter to select'", "r");
-            if (fp == NULL) {
-                show_message("Failed to open timezone selector");
-                continue;
-            }
-
-            if (fgets(temp_input, sizeof(temp_input), fp) != NULL) {
-                temp_input[strcspn(temp_input, "\n")] = '\0';
-                if (strlen(temp_input) > 0) {
-                    strcpy(timezone, temp_input);
-                }
-            }
-            pclose(fp);
-
+        } else if (f->type == INPUT_FZF_TIMEZONE) {
+            fzf_select(timezone, "timedatectl list-timezones | fzf --height=40% --reverse --prompt='Timezone: ' --header='Type your city/timezone, Enter to select'", NULL);
             if (strlen(timezone) == 0) {
                 show_message("Timezone is required");
             } else {
                 current_field++;
+            }
+        } else if (current_field == 1) {
+            int result = handle_password_entry(password, confirmed_password,
+                                                form_row, logo_start,
+                                                username, hostname, keyboard, timezone);
+            if (result == -1) return 0;
+            if (result == 1) current_field = 3;
+        } else if (current_field == 2) {
+            current_field = 1;
+        } else {
+            printf(ANSI_CURSOR_POS, form_row + current_field, logo_start + f->cursor_offset);
+            fflush(stdout);
+
+            if (!read_line(temp_input, sizeof(temp_input), 1))
+                return 0;
+
+            if (strlen(temp_input) == 0) {
+                if (f->default_val) {
+                    strcpy(f->dest, f->default_val);
+                    current_field++;
+                }
+            } else if (validate_alphanumeric(temp_input)) {
+                strcpy(f->dest, temp_input);
+                current_field++;
+            } else {
+                show_message(f->error_msg);
             }
         }
     }
@@ -614,11 +582,10 @@ static int get_form_input(
     while (1) {
         draw_form(username, password, confirmed_password, hostname, keyboard, timezone, 6);
 
-        int rows, cols;
         get_terminal_size(&rows, &cols);
-        int logo_start = (cols - 70) / 2;
+        logo_start = (cols - 70) / 2;
 
-        printf("\033[%d;%dH\033[33mPress Enter to continue, or field number to edit (0-5)\033[0m", 20, logo_start);
+        printf(ANSI_CURSOR_POS ANSI_YELLOW "Press Enter to continue, or field number to edit (0-5)" ANSI_RESET, 20, logo_start);
         fflush(stdout);
 
         enable_raw_mode();
@@ -635,164 +602,33 @@ static int get_form_input(
             if (c >= '0' && c <= '5') {
                 disable_raw_mode();
                 int edit_field = c - '0';
+                Form_Field *f = &fields[edit_field];
 
-                if (edit_field == 0) {
-                    draw_form(username, password, confirmed_password, hostname, keyboard, timezone, 0);
-                    printf("\033[%d;%dH", form_row, logo_start + 13);
-                    fflush(stdout);
-
-                    struct termios old_term;
-                    tcgetattr(STDIN_FILENO, &old_term);
-                    struct termios new_term = old_term;
-                    new_term.c_lflag |= (ECHO | ICANON);
-                    new_term.c_lflag &= ~ISIG;
-                    tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_term);
-
-                    if (fgets(temp_input, sizeof(temp_input), stdin) != NULL) {
-                        temp_input[strcspn(temp_input, "\n")] = '\0';
-                        if (strlen(temp_input) > 0) {
-                            int valid = 1;
-                            for (int i = 0; temp_input[i]; i++) {
-                                if (!isalnum(temp_input[i]) && temp_input[i] != '-' && temp_input[i] != '_') {
-                                    valid = 0;
-                                    break;
-                                }
-                            }
-                            if (valid) {
-                                strcpy(username, temp_input);
-                            } else {
-                                show_message("Username must be alphanumeric");
-                            }
-                        }
-                    }
-                    tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-                } else if (edit_field == 1) {
-                    draw_form(username, password, confirmed_password, hostname, keyboard, timezone, 1);
-                    printf("\033[%d;%dH", form_row + 1, logo_start + 13);
-                    fflush(stdout);
-
-                    struct termios old_term;
-                    tcgetattr(STDIN_FILENO, &old_term);
-                    struct termios new_term = old_term;
-                    new_term.c_lflag &= ~ECHO;
-                    new_term.c_lflag |= ICANON;
-                    new_term.c_lflag &= ~ISIG;
-                    tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_term);
-
-                    if (fgets(temp_input, sizeof(temp_input), stdin) != NULL) {
-                        temp_input[strcspn(temp_input, "\n")] = '\0';
-                        if (strlen(temp_input) > 0) {
-                            strcpy(password, temp_input);
-
-                            draw_form(username, password, confirmed_password, hostname, keyboard, timezone, 2);
-                            printf("\033[%d;%dH", form_row + 2, logo_start + 20);
-                            fflush(stdout);
-
-                            if (fgets(password_confirm, sizeof(password_confirm), stdin) != NULL) {
-                                password_confirm[strcspn(password_confirm, "\n")] = '\0';
-                                if (strcmp(password, password_confirm) == 0) {
-                                    strcpy(confirmed_password, password_confirm);
-                                } else {
-                                    show_message("Passwords do not match");
-                                }
-                            }
-                        }
-                    }
-                    tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-                } else if (edit_field == 2) {
-                    draw_form(username, password, confirmed_password, hostname, keyboard, timezone, 1);
-                    printf("\033[%d;%dH", form_row + 1, logo_start + 13);
-                    fflush(stdout);
-
-                    struct termios old_term;
-                    tcgetattr(STDIN_FILENO, &old_term);
-                    struct termios new_term = old_term;
-                    new_term.c_lflag &= ~ECHO;
-                    new_term.c_lflag |= ICANON;
-                    new_term.c_lflag &= ~ISIG;
-                    tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_term);
-
-                    if (fgets(temp_input, sizeof(temp_input), stdin) != NULL) {
-                        temp_input[strcspn(temp_input, "\n")] = '\0';
-                        if (strlen(temp_input) > 0) {
-                            strcpy(password, temp_input);
-
-                            draw_form(username, password, confirmed_password, hostname, keyboard, timezone, 2);
-                            printf("\033[%d;%dH", form_row + 2, logo_start + 20);
-                            fflush(stdout);
-
-                            if (fgets(password_confirm, sizeof(password_confirm), stdin) != NULL) {
-                                password_confirm[strcspn(password_confirm, "\n")] = '\0';
-                                if (strcmp(password, password_confirm) == 0) {
-                                    strcpy(confirmed_password, password_confirm);
-                                } else {
-                                    show_message("Passwords do not match");
-                                }
-                            }
-                        }
-                    }
-                    tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-                } else if (edit_field == 3) {
-                    draw_form(username, password, confirmed_password, hostname, keyboard, timezone, 3);
-                    printf("\033[%d;%dH", form_row + 3, logo_start + 13);
-                    fflush(stdout);
-
-                    struct termios old_term;
-                    tcgetattr(STDIN_FILENO, &old_term);
-                    struct termios new_term = old_term;
-                    new_term.c_lflag |= (ECHO | ICANON);
-                    new_term.c_lflag &= ~ISIG;
-                    tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_term);
-
-                    if (fgets(temp_input, sizeof(temp_input), stdin) != NULL) {
-                        temp_input[strcspn(temp_input, "\n")] = '\0';
-                        if (strlen(temp_input) == 0) {
-                            strcpy(hostname, "tonarchy");
-                        } else {
-                            int valid = 1;
-                            for (int i = 0; temp_input[i]; i++) {
-                                if (!isalnum(temp_input[i]) && temp_input[i] != '-' && temp_input[i] != '_') {
-                                    valid = 0;
-                                    break;
-                                }
-                            }
-                            if (valid) {
-                                strcpy(hostname, temp_input);
-                            } else {
-                                show_message("Hostname must be alphanumeric");
-                            }
-                        }
-                    }
-                    tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
-                } else if (edit_field == 4) {
-                    clear_screen();
-                    FILE *fp = popen("localectl list-keymaps | fzf --height=40% --reverse --prompt='Keyboard: ' --header='Start typing to filter, Enter to select' --query='us'", "r");
-                    if (fp != NULL) {
-                        if (fgets(temp_input, sizeof(temp_input), fp) != NULL) {
-                            temp_input[strcspn(temp_input, "\n")] = '\0';
-                            if (strlen(temp_input) > 0) {
-                                strcpy(keyboard, temp_input);
-                            }
-                        }
-                        pclose(fp);
-                    }
-                    if (strlen(keyboard) == 0) {
-                        strcpy(keyboard, "us");
-                    }
-                } else if (edit_field == 5) {
-                    clear_screen();
-                    FILE *fp = popen("timedatectl list-timezones | fzf --height=40% --reverse --prompt='Timezone: ' --header='Type your city/timezone, Enter to select'", "r");
-                    if (fp != NULL) {
-                        if (fgets(temp_input, sizeof(temp_input), fp) != NULL) {
-                            temp_input[strcspn(temp_input, "\n")] = '\0';
-                            if (strlen(temp_input) > 0) {
-                                strcpy(timezone, temp_input);
-                            }
-                        }
-                        pclose(fp);
-                    }
-                    if (strlen(timezone) == 0) {
+                if (f->type == INPUT_FZF_KEYMAP) {
+                    fzf_select(keyboard, "localectl list-keymaps | fzf --height=40% --reverse --prompt='Keyboard: ' --header='Start typing to filter, Enter to select' --query='us'", "us");
+                } else if (f->type == INPUT_FZF_TIMEZONE) {
+                    fzf_select(timezone, "timedatectl list-timezones | fzf --height=40% --reverse --prompt='Timezone: ' --header='Type your city/timezone, Enter to select'", NULL);
+                    if (strlen(timezone) == 0)
                         show_message("Timezone is required");
+                } else if (edit_field == 1 || edit_field == 2) {
+                    draw_form(username, password, confirmed_password, hostname, keyboard, timezone, 1);
+                    handle_password_entry(password, confirmed_password,
+                                          form_row, logo_start,
+                                          username, hostname, keyboard, timezone);
+                } else {
+                    draw_form(username, password, confirmed_password, hostname, keyboard, timezone, edit_field);
+                    printf(ANSI_CURSOR_POS, form_row + edit_field, logo_start + f->cursor_offset);
+                    fflush(stdout);
+
+                    if (read_line(temp_input, sizeof(temp_input), 1)) {
+                        if (strlen(temp_input) == 0 && f->default_val) {
+                            strcpy(f->dest, f->default_val);
+                        } else if (strlen(temp_input) > 0) {
+                            if (validate_alphanumeric(temp_input))
+                                strcpy(f->dest, temp_input);
+                            else
+                                show_message(f->error_msg);
+                        }
                     }
                 }
                 continue;
@@ -1196,6 +1032,9 @@ static int configure_xfce(const char *username) {
     snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.mozilla", username, username, username);
     system(cmd);
 
+    create_directory("/mnt/usr/lib/firefox/distribution", 0755);
+    system("cp /usr/share/tonarchy/firefox-policies/policies.json /mnt/usr/lib/firefox/distribution/");
+
     snprintf(cmd, sizeof(cmd), "/mnt/home/%s/.config", username);
     create_directory(cmd, 0755);
 
@@ -1206,6 +1045,9 @@ static int configure_xfce(const char *username) {
     system(cmd);
 
     snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/rofi /mnt/home/%s/.config/rofi", username);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/fastfetch /mnt/home/%s/.config/fastfetch", username);
     system(cmd);
 
     snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config", username, username, username);
@@ -1355,9 +1197,10 @@ static int install_suckless_tools(const char *username) {
     }
 
     char autologin_exec[512];
-    snprintf(autologin_exec, sizeof(autologin_exec),
-             "ExecStart=-/sbin/agetty -o \"-p -f -- \\\\u\" --noclear --autologin %s %%I $TERM",
-             username);
+    snprintf(
+        autologin_exec,
+        sizeof(autologin_exec
+    ), "ExecStart=-/sbin/agetty -o \"-p -f -- \\\\u\" --noclear --autologin %s %%I $TERM", username);
 
     Config_Entry autologin_entries[] = {
         {"[Service]", ""},

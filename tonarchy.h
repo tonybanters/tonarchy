@@ -26,6 +26,7 @@
 #define ANSI_BOLD          ANSI_ESC "1m"
 #define ANSI_WHITE         ANSI_ESC "37m"
 #define ANSI_GREEN         ANSI_ESC "32m"
+#define ANSI_YELLOW        ANSI_ESC "33m"
 #define ANSI_GRAY          ANSI_ESC "90m"
 #define ANSI_BLUE          ANSI_ESC "34m"
 #define ANSI_BLUE_BOLD     ANSI_ESC "1;34m"
@@ -63,6 +64,27 @@ typedef struct {
     size_t entry_count;
 } Systemd_Override;
 
+typedef struct {
+    const char *label;
+    const char *value;
+    const char *default_display;
+    int is_password;
+} Tui_Field;
+
+typedef enum {
+    INPUT_TEXT,
+    INPUT_PASSWORD,
+    INPUT_FZF_KEYMAP,
+    INPUT_FZF_TIMEZONE
+} Input_Type;
+
+typedef struct {
+    char *dest;
+    const char *default_val;
+    Input_Type type;
+    int cursor_offset;
+    const char *error_msg;
+} Form_Field;
 
 void logger_init(const char *log_path);
 void logger_close(void);
