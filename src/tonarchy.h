@@ -2,6 +2,7 @@
 #define TONARCHY_H
 
 #define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 500
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -17,6 +18,7 @@
 #include <time.h>
 #include <pwd.h>
 #include <grp.h>
+#include <fcntl.h>
 
 #define CHROOT_PATH "/mnt"
 #define MAX_CMD_SIZE 4096

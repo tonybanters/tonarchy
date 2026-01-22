@@ -12,7 +12,7 @@ enum Install_Option {
 
 static const char *XFCE_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xrandr xorg-xset xfce4 xfce4-goodies xfce4-session xfce4-whiskermenu-plugin thunar thunar-archive-plugin file-roller firefox alacritty vlc evince eog fastfetch rofi ripgrep fd ttf-iosevka-nerd ttf-jetbrains-mono-nerd";
 
-static const char *OXWM_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr xorg-xset libx11 libxft freetype2 fontconfig pkg-config lua firefox alacritty vlc evince eog cargo ttf-iosevka-nerd ttf-jetbrains-mono-nerd picom xclip xwallpaper maim rofi pulseaudio pulseaudio-alsa pavucontrol alsa-utils fastfetch ripgrep fd pcmanfm";
+static const char *OXWM_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr xorg-xset libx11 libxft freetype2 fontconfig pkg-config lua firefox alacritty vlc evince eog cargo ttf-iosevka-nerd ttf-jetbrains-mono-nerd picom xclip xwallpaper maim rofi pulseaudio pulseaudio-alsa pavucontrol alsa-utils fastfetch ripgrep fd pcmanfm lxappearance papirus-icon-theme gnome-themes-extra";
 
 static int is_uefi_system(void) {
     struct stat st;
@@ -1024,6 +1024,34 @@ static int configure_system_impl(
     return 1;
 }
 
+static int get_root_uuid(const char *disk, char *uuid_out, size_t uuid_size) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "blkid -s UUID -o value /dev/%s3", disk);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        LOG_ERROR("Failed to get UUID for /dev/%s3", disk);
+        return 0;
+    }
+
+    if (fgets(uuid_out, uuid_size, fp) == NULL) {
+        pclose(fp);
+        LOG_ERROR("Failed to read UUID for /dev/%s3", disk);
+        return 0;
+    }
+
+    uuid_out[strcspn(uuid_out, "\n")] = '\0';
+    pclose(fp);
+
+    if (strlen(uuid_out) == 0) {
+        LOG_ERROR("Empty UUID for /dev/%s3", disk);
+        return 0;
+    }
+
+    LOG_INFO("Root partition UUID: %s", uuid_out);
+    return 1;
+}
+
 static int install_bootloader(const char *disk) {
     char cmd[2048];
     int rows, cols;
@@ -1039,28 +1067,67 @@ static int install_bootloader(const char *disk) {
     fflush(stdout);
 
     if (uefi) {
-        snprintf(cmd, sizeof(cmd),
-            "arch-chroot /mnt /bin/bash -c '\n"
-            "bootctl install\n"
-            "cat > /boot/loader/loader.conf <<EOF\n"
-            "default arch.conf\n"
-            "timeout 3\n"
-            "console-mode max\n"
-            "editor no\n"
-            "EOF\n"
-            "cat > /boot/loader/entries/arch.conf <<EOF\n"
-            "title   Tonarchy\n"
-            "linux   /vmlinuz-linux\n"
-            "initrd  /initramfs-linux.img\n"
-            "options root=/dev/%s3 rw\n"
-            "EOF\n"
-            "'",
-            disk);
+        LOG_INFO("Installing systemd-boot");
 
-        if (system(cmd) != 0) {
+        if (!chroot_exec("bootctl install")) {
+            LOG_ERROR("bootctl install failed");
             show_message("Failed to install bootloader");
             return 0;
         }
+
+        char uuid[128];
+        if (!get_root_uuid(disk, uuid, sizeof(uuid))) {
+            show_message("Failed to get root partition UUID");
+            return 0;
+        }
+
+        LOG_INFO("Creating loader.conf");
+        if (!write_file("/mnt/boot/loader/loader.conf",
+            "default arch.conf\n"
+            "timeout 3\n"
+            "console-mode max\n"
+            "editor no\n")) {
+            LOG_ERROR("Failed to write loader.conf");
+            show_message("Failed to create loader config");
+            return 0;
+        }
+
+        if (!create_directory("/mnt/boot/loader/entries", 0755)) {
+            LOG_ERROR("Failed to create boot entries directory");
+            return 0;
+        }
+
+        char boot_entry[512];
+        snprintf(boot_entry, sizeof(boot_entry),
+            "title   Tonarchy\n"
+            "linux   /vmlinuz-linux\n"
+            "initrd  /initramfs-linux.img\n"
+            "options root=UUID=%s rw\n",
+            uuid);
+
+        LOG_INFO("Creating boot entry");
+        if (!write_file("/mnt/boot/loader/entries/arch.conf", boot_entry)) {
+            LOG_ERROR("Failed to write boot entry");
+            show_message("Failed to create boot entry");
+            return 0;
+        }
+
+        struct stat st;
+        if (stat("/mnt/boot/loader/entries/arch.conf", &st) != 0) {
+            LOG_ERROR("Boot entry file missing after creation");
+            show_message("Boot entry verification failed");
+            return 0;
+        }
+
+        LOG_INFO("Syncing filesystem");
+        sync();
+        sleep(1);
+
+        if (!chroot_exec("sync")) {
+            LOG_WARN("Failed to sync in chroot");
+        }
+
+        LOG_INFO("systemd-boot installation completed");
     } else {
         snprintf(cmd, sizeof(cmd),
             "arch-chroot /mnt pacman -S --noconfirm grub 2>> /tmp/tonarchy-install.log");
@@ -1097,6 +1164,9 @@ static int setup_common_configs(const char *username) {
 
     create_directory("/mnt/usr/share/tonarchy", 0755);
     system("cp /usr/share/tonarchy/favicon.png /mnt/usr/share/tonarchy/favicon.png");
+
+    create_directory("/mnt/usr/share/themes", 0755);
+    system("cp -r /usr/share/tonarchy/Tokyonight-Dark /mnt/usr/share/themes/");
 
     LOG_INFO("Setting up Firefox profile");
     snprintf(cmd, sizeof(cmd), "/mnt/home/%s/.config/firefox", username);

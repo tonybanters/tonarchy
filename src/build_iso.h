@@ -12,8 +12,8 @@
 #include <time.h>
 #include <stdbool.h>
 
-#define PATH_MAX_LEN 512
-#define CMD_MAX_LEN 2048
+#define PATH_MAX_LEN 1024
+#define CMD_MAX_LEN 4096
 
 typedef enum {
     CONTAINER_NONE,

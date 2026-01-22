@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -std=c23 -Wall -Wextra -O2
+CFLAGS = -std=c23 -Wall -Wextra -O2 -Wno-format-truncation
 LDFLAGS =
 STATIC_LDFLAGS = -static
 
