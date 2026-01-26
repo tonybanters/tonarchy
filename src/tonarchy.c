@@ -1126,14 +1126,17 @@ static int configure_system_impl(
         "Failed to create user"
     );
 
+    FILE *chpasswd_pipe = popen("arch-chroot /mnt chpasswd 2>> /tmp/tonarchy-install.log", "w");
+    if (!chpasswd_pipe) {
+        show_message("Failed to open chpasswd");
+        return 0;
+    }
+    fprintf(chpasswd_pipe, "%s:%s\n", username, password);
+    fprintf(chpasswd_pipe, "root:%s\n", password);
+    int chpasswd_status = pclose(chpasswd_pipe);
     CHECK_OR_FAIL(
-        chroot_exec_fmt("echo '%s:%s' | chpasswd", username, password),
-        "Failed to set password"
-    );
-
-    CHECK_OR_FAIL(
-        chroot_exec_fmt("echo 'root:%s' | chpasswd", password),
-        "Failed to set root password"
+        chpasswd_status == 0,
+        "Failed to set passwords"
     );
 
     create_directory("/mnt/etc/sudoers.d", 0750);
