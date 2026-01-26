@@ -8,7 +8,7 @@ SRC = src/tonarchy.c
 LATEST_ISO = $(shell ls -t out/*.iso 2>/dev/null | head -1)
 TEST_DISK = test-disk.qcow2
 
-.PHONY: all clean static build build-container test test-nix test-disk test-nvme clean-iso clean-vm
+.PHONY: all clean static build build-container test test-nix test-disk test-nvme release clean-iso clean-vm
 
 all: $(TARGET)
 
@@ -124,11 +124,19 @@ test-disk:
 		-device virtio-net-pci,netdev=net0 \
 		-boot menu=on
 
+release: build
+	@if [ -z "$(LATEST_ISO)" ]; then echo "No ISO found after build"; exit 1; fi
+	@echo "Generating checksums for $(LATEST_ISO)..."
+	@cd out && sha256sum $(notdir $(LATEST_ISO)) > $(notdir $(LATEST_ISO)).sha256
+	@cd out && md5sum $(notdir $(LATEST_ISO)) > $(notdir $(LATEST_ISO)).md5
+	@echo "Release files ready in out/:"
+	@ls -lh out/$(notdir $(LATEST_ISO))*
+
 clean-vm:
 	rm -f $(TEST_DISK) OVMF_VARS.fd
 
 clean-iso:
-	rm -rf out/*.iso
+	rm -rf out/*.iso out/*.sha256 out/*.md5
 	sudo rm -rf /tmp/tonarchy_iso_work
 
 clean: clean-iso clean-vm
