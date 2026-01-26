@@ -6,4 +6,5 @@ if [[ $(tty) == "/dev/tty1" ]]; then
     pacman-key --populate archlinux
     clear
     /usr/local/bin/tonarchy
+    exec /bin/bash
 fi

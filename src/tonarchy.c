@@ -1,9 +1,18 @@
 #include "tonarchy.h"
 #include <string.h>
+#include <ctype.h>
 
 static FILE *log_file = NULL;
 static const char *level_strings[] = {"DEBUG", "INFO", "WARN", "ERROR"};
 static struct termios orig_termios;
+
+static void part_path(char *out, size_t size, const char *disk, int part) {
+    if (isdigit(disk[strlen(disk) - 1])) {
+        snprintf(out, size, "/dev/%sp%d", disk, part);
+    } else {
+        snprintf(out, size, "/dev/%s%d", disk, part);
+    }
+}
 
 enum Install_Option {
     BEGINNER = 0,
@@ -392,7 +401,7 @@ static int list_wifi_networks(char networks[][256], char ssids[][128], int max_n
         if (token) strncpy(security, token, sizeof(security) - 1);
 
         if (strlen(ssid) > 0 && strcmp(ssid, "--") != 0) {
-            strncpy(ssids[count], ssid, 127);
+            snprintf(ssids[count], 128, "%s", ssid);
             snprintf(networks[count], 255, "%s (%s%%) [%s]", ssid, signal,
                      strlen(security) > 0 ? security : "Open");
             count++;
@@ -776,14 +785,6 @@ static int get_form_input(
     return 1;
 }
 
-static void get_partition_name(const char *disk, int partition_num, char *output, size_t output_size) {
-    if (strstr(disk, "nvme") != NULL || strstr(disk, "mmcblk") != NULL) {
-        snprintf(output, output_size, "%sp%d", disk, partition_num);
-    } else {
-        snprintf(output, output_size, "%s%d", disk, partition_num);
-    }
-}
-
 static int select_disk(char *disk_name) {
     clear_screen();
 
@@ -856,19 +857,19 @@ static int select_disk(char *disk_name) {
 
 static int partition_disk(const char *disk) {
     char cmd[1024];
-    char part1[128], part2[128], part3[128];
     int rows, cols;
     get_terminal_size(&rows, &cols);
-
-    get_partition_name(disk, 1, part1, sizeof(part1));
-    get_partition_name(disk, 2, part2, sizeof(part2));
-    get_partition_name(disk, 3, part3, sizeof(part3));
 
     clear_screen();
     draw_logo(cols);
 
     int logo_start = (cols - 70) / 2;
     int uefi = is_uefi_system();
+
+    char part1[64], part2[64], part3[64];
+    part_path(part1, sizeof(part1), disk, 1);
+    part_path(part2, sizeof(part2), disk, 2);
+    part_path(part3, sizeof(part3), disk, 3);
 
     printf("\033[%d;%dH\033[37mPartitioning /dev/%s (%s mode)...\033[0m", 10, logo_start, disk, uefi ? "UEFI" : "BIOS");
     fflush(stdout);
@@ -922,41 +923,41 @@ static int partition_disk(const char *disk) {
     fflush(stdout);
 
     if (uefi) {
-        snprintf(cmd, sizeof(cmd), "mkfs.fat -F32 /dev/%s 2>> /tmp/tonarchy-install.log", part1);
+        snprintf(cmd, sizeof(cmd), "mkfs.fat -F32 %s 2>> /tmp/tonarchy-install.log", part1);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to format EFI partition: /dev/%s", part1);
+            LOG_ERROR("Failed to format EFI partition: %s", part1);
             show_message("Failed to format EFI partition");
             return 0;
         }
         LOG_INFO("Formatted EFI partition");
 
-        snprintf(cmd, sizeof(cmd), "mkswap /dev/%s 2>> /tmp/tonarchy-install.log", part2);
+        snprintf(cmd, sizeof(cmd), "mkswap %s 2>> /tmp/tonarchy-install.log", part2);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to format swap: /dev/%s", part2);
+            LOG_ERROR("Failed to format swap: %s", part2);
             show_message("Failed to format swap partition");
             return 0;
         }
         LOG_INFO("Formatted swap partition");
 
-        snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F /dev/%s 2>> /tmp/tonarchy-install.log", part3);
+        snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F %s 2>> /tmp/tonarchy-install.log", part3);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to format root: /dev/%s", part3);
+            LOG_ERROR("Failed to format root: %s", part3);
             show_message("Failed to format root partition");
             return 0;
         }
         LOG_INFO("Formatted root partition");
     } else {
-        snprintf(cmd, sizeof(cmd), "mkswap /dev/%s 2>> /tmp/tonarchy-install.log", part1);
+        snprintf(cmd, sizeof(cmd), "mkswap %s 2>> /tmp/tonarchy-install.log", part1);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to format swap: /dev/%s", part1);
+            LOG_ERROR("Failed to format swap: %s", part1);
             show_message("Failed to format swap partition");
             return 0;
         }
         LOG_INFO("Formatted swap partition");
 
-        snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F /dev/%s 2>> /tmp/tonarchy-install.log", part2);
+        snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F %s 2>> /tmp/tonarchy-install.log", part2);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to format root: /dev/%s", part2);
+            LOG_ERROR("Failed to format root: %s", part2);
             show_message("Failed to format root partition");
             return 0;
         }
@@ -967,9 +968,9 @@ static int partition_disk(const char *disk) {
     fflush(stdout);
 
     if (uefi) {
-        snprintf(cmd, sizeof(cmd), "mount /dev/%s /mnt 2>> /tmp/tonarchy-install.log", part3);
+        snprintf(cmd, sizeof(cmd), "mount %s /mnt 2>> /tmp/tonarchy-install.log", part3);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to mount root: /dev/%s", part3);
+            LOG_ERROR("Failed to mount root: %s", part3);
             show_message("Failed to mount root partition");
             return 0;
         }
@@ -978,32 +979,32 @@ static int partition_disk(const char *disk) {
         snprintf(cmd, sizeof(cmd), "mkdir -p /mnt/boot 2>> /tmp/tonarchy-install.log");
         system(cmd);
 
-        snprintf(cmd, sizeof(cmd), "mount /dev/%s /mnt/boot 2>> /tmp/tonarchy-install.log", part1);
+        snprintf(cmd, sizeof(cmd), "mount %s /mnt/boot 2>> /tmp/tonarchy-install.log", part1);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to mount EFI: /dev/%s", part1);
+            LOG_ERROR("Failed to mount EFI: %s", part1);
             show_message("Failed to mount EFI partition");
             return 0;
         }
         LOG_INFO("Mounted EFI partition");
 
-        snprintf(cmd, sizeof(cmd), "swapon /dev/%s 2>> /tmp/tonarchy-install.log", part2);
+        snprintf(cmd, sizeof(cmd), "swapon %s 2>> /tmp/tonarchy-install.log", part2);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to enable swap: /dev/%s", part2);
+            LOG_ERROR("Failed to enable swap: %s", part2);
             show_message("Failed to enable swap");
             return 0;
         }
     } else {
-        snprintf(cmd, sizeof(cmd), "mount /dev/%s /mnt 2>> /tmp/tonarchy-install.log", part2);
+        snprintf(cmd, sizeof(cmd), "mount %s /mnt 2>> /tmp/tonarchy-install.log", part2);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to mount root: /dev/%s", part2);
+            LOG_ERROR("Failed to mount root: %s", part2);
             show_message("Failed to mount root partition");
             return 0;
         }
         LOG_INFO("Mounted root partition");
 
-        snprintf(cmd, sizeof(cmd), "swapon /dev/%s 2>> /tmp/tonarchy-install.log", part1);
+        snprintf(cmd, sizeof(cmd), "swapon %s 2>> /tmp/tonarchy-install.log", part1);
         if (system(cmd) != 0) {
-            LOG_ERROR("Failed to enable swap: /dev/%s", part1);
+            LOG_ERROR("Failed to enable swap: %s", part1);
             show_message("Failed to enable swap");
             return 0;
         }
@@ -1166,20 +1167,20 @@ static int configure_system_impl(
 
 static int get_root_uuid(const char *disk, char *uuid_out, size_t uuid_size) {
     char cmd[512];
-    char part3[128];
+    char root_part[64];
 
-    get_partition_name(disk, 3, part3, sizeof(part3));
-    snprintf(cmd, sizeof(cmd), "blkid -s UUID -o value /dev/%s", part3);
+    part_path(root_part, sizeof(root_part), disk, 3);
+    snprintf(cmd, sizeof(cmd), "blkid -s UUID -o value %s", root_part);
 
     FILE *fp = popen(cmd, "r");
     if (!fp) {
-        LOG_ERROR("Failed to get UUID for /dev/%s", part3);
+        LOG_ERROR("Failed to get UUID for %s", root_part);
         return 0;
     }
 
     if (fgets(uuid_out, uuid_size, fp) == NULL) {
         pclose(fp);
-        LOG_ERROR("Failed to read UUID for /dev/%s", part3);
+        LOG_ERROR("Failed to read UUID for %s", root_part);
         return 0;
     }
 
@@ -1187,7 +1188,7 @@ static int get_root_uuid(const char *disk, char *uuid_out, size_t uuid_size) {
     pclose(fp);
 
     if (strlen(uuid_out) == 0) {
-        LOG_ERROR("Empty UUID for /dev/%s", part3);
+        LOG_ERROR("Empty UUID for %s", root_part);
         return 0;
     }
 
@@ -1599,20 +1600,23 @@ int main(void) {
 
     int logo_start = (cols - 70) / 2;
     printf("\033[%d;%dH\033[1;32mInstallation complete!\033[0m\n", 10, logo_start);
-    printf("\033[%d;%dH\033[37mPress Enter or Q to quit. Then, manually reboot.\033[0m\n", 12, logo_start);
+    printf("\033[%d;%dH\033[37mPress Enter to reboot...\033[0m\n", 12, logo_start);
     fflush(stdout);
 
     char c;
     enable_raw_mode();
     while (read(STDIN_FILENO, &c, 1) == 1) {
-        if (c == '\r' || c == '\n' || c == 'q' || c == 'Q') {
+        if (c == '\r' || c == '\n') {
             break;
         }
     }
     disable_raw_mode();
 
-    LOG_INFO("Tonarchy installer finished - exiting cleanly");
+    LOG_INFO("Tonarchy installer finished - scheduling reboot");
     logger_close();
 
-    return 0;
+    sync();
+    system("sleep 2 && reboot &");
+
+    exit(0);
 }

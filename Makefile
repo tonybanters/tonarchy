@@ -8,7 +8,7 @@ SRC = src/tonarchy.c
 LATEST_ISO = $(shell ls -t out/*.iso 2>/dev/null | head -1)
 TEST_DISK = test-disk.qcow2
 
-.PHONY: all clean install static build build-container test test-nix test-disk clean-iso clean-vm
+.PHONY: all clean install static build build-container test test-nix test-disk test-nvme clean-iso clean-vm
 
 all: $(TARGET)
 
@@ -54,6 +54,39 @@ test:
 		-smp $$(nproc) \
 		-m 8192 \
 		-drive file=$(TEST_DISK),format=qcow2,if=virtio \
+		-drive if=pflash,format=raw,readonly=on,file=$$OVMF_CODE \
+		-drive if=pflash,format=raw,file=./OVMF_VARS.fd \
+		-drive file="$(LATEST_ISO)",media=cdrom,readonly=on,cache=none \
+		-boot order=d \
+		-vga virtio \
+		-display gtk \
+		-usb -device usb-tablet \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device virtio-net-pci,netdev=net0 \
+		-boot menu=on
+
+test-nvme:
+	@if [ -z "$(LATEST_ISO)" ]; then echo "No ISO found. Run 'make build' first"; exit 1; fi
+	@if [ ! -f "$(TEST_DISK)" ]; then \
+		echo "Creating test disk..."; \
+		qemu-img create -f qcow2 "$(TEST_DISK)" 20G; \
+	fi
+	@OVMF_CODE=$$(find /usr/share/edk2 /usr/share/OVMF -name "OVMF_CODE*.fd" 2>/dev/null | grep x64 | head -1); \
+	if [ -z "$$OVMF_CODE" ]; then \
+		echo "Error: OVMF not found. Install with: sudo pacman -S edk2-ovmf"; \
+		exit 1; \
+	fi; \
+	OVMF_VARS=$$(find /usr/share/edk2 /usr/share/OVMF -name "OVMF_VARS*.fd" 2>/dev/null | grep x64 | head -1); \
+	if [ ! -f ./OVMF_VARS.fd ]; then \
+		cp "$$OVMF_VARS" ./OVMF_VARS.fd; \
+	fi; \
+	echo "Starting UEFI VM with NVMe disk: $(LATEST_ISO)"; \
+	qemu-system-x86_64 \
+		-cpu host -enable-kvm -machine q35,accel=kvm \
+		-smp $$(nproc) \
+		-m 8192 \
+		-drive file=$(TEST_DISK),format=qcow2,if=none,id=nvme0 \
+		-device nvme,serial=deadbeef,drive=nvme0 \
 		-drive if=pflash,format=raw,readonly=on,file=$$OVMF_CODE \
 		-drive if=pflash,format=raw,file=./OVMF_VARS.fd \
 		-drive file="$(LATEST_ISO)",media=cdrom,readonly=on,cache=none \
