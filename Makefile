@@ -8,7 +8,7 @@ SRC = src/tonarchy.c
 LATEST_ISO = $(shell ls -t out/*.iso 2>/dev/null | head -1)
 TEST_DISK = test-disk.qcow2
 
-.PHONY: all clean install static build build-container test test-nix test-disk test-nvme clean-iso clean-vm
+.PHONY: all clean static build build-container test test-nix test-disk test-nvme clean-iso clean-vm
 
 all: $(TARGET)
 
@@ -133,8 +133,3 @@ clean-iso:
 
 clean: clean-iso clean-vm
 	rm -f $(TARGET) $(TARGET)-static build_iso
-
-install: $(TARGET)
-	install -Dm755 $(TARGET) /usr/local/bin/$(TARGET)
-	cp -r packages /usr/share/tonarchy/
-	cp -r configs /usr/share/tonarchy/
