@@ -377,7 +377,13 @@ void show_message(const char *message) {
 }
 
 static int check_internet_connection(void) {
+    LOG_DEBUG("Checking internet connection (ping 1.1.1.1)");
     int result = system("ping -c 1 -W 2 1.1.1.1 > /dev/null 2>&1");
+    if (result == 0) {
+        LOG_INFO("Internet connection available");
+    } else {
+        LOG_DEBUG("Internet check failed (exit code: %d)", result);
+    }
     return result == 0;
 }
 
@@ -462,18 +468,47 @@ static int connect_to_wifi(const char *ssid) {
 }
 
 static int setup_wifi_if_needed(void) {
+    LOG_INFO("Starting network configuration");
+    
+    int rows, cols;
+    get_terminal_size(&rows, &cols);
+    int logo_start = (cols - 70) / 2;
+    
+    // Wait for NetworkManager to be fully active (fixes #11)
+    // Issue: Installer was checking network before NetworkManager initialized
+    clear_screen();
+    draw_logo(cols);
+    printf("\033[%d;%dH\033[37mWaiting for network services...\033[0m", 10, logo_start);
+    fflush(stdout);
+    
+    LOG_DEBUG("Waiting for NetworkManager service");
+    system("while ! systemctl is-active --quiet NetworkManager; do sleep 0.5; done");
+    LOG_DEBUG("NetworkManager is active");
+    
+    // Give DHCP time to configure wired interfaces
+    printf("\033[%d;%dH\033[37mConfiguring network...         \033[0m", 10, logo_start);
+    fflush(stdout);
+    LOG_DEBUG("Waiting 3 seconds for DHCP configuration");
+    sleep(3);
+    
+    // Check if wired network is now available
+    LOG_DEBUG("Checking internet connection");
     if (check_internet_connection()) {
+        LOG_INFO("Wired network connection detected");
+        clear_screen();
+        draw_logo(cols);
+        printf("\033[%d;%dH\033[32m✓ Network connected\033[0m", 10, logo_start);
+        fflush(stdout);
+        sleep(1);
         return 1;
     }
 
-    int rows, cols;
-    get_terminal_size(&rows, &cols);
-
+    // No wired connection, fall back to WiFi
+    LOG_INFO("No wired connection, scanning for WiFi");
     clear_screen();
     draw_logo(cols);
 
-    int logo_start = (cols - 70) / 2;
-    printf("\033[%d;%dH\033[37mNo internet connection detected.\033[0m", 10, logo_start);
+    printf("\033[%d;%dH\033[37mNo wired connection detected.\033[0m", 10, logo_start);
     printf("\033[%d;%dH\033[37mScanning for WiFi networks...\033[0m", 11, logo_start);
     fflush(stdout);
 
