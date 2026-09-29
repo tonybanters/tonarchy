@@ -5,6 +5,7 @@
 static FILE *log_file = NULL;
 static const char *level_strings[] = {"DEBUG", "INFO", "WARN", "ERROR"};
 static struct termios orig_termios;
+static const char *menu_title = NULL;
 
 static void part_path(char *out, size_t size, const char *disk, int part) {
     if (isdigit(disk[strlen(disk) - 1])) {
@@ -372,6 +373,10 @@ static int draw_menu(const char **items, int count, int selected) {
 
     int logo_start = get_logo_start(cols);
     int menu_start_row = get_menu_start_row(cols);
+
+    if (menu_title) {
+        printf("\033[%d;%dH\033[1;37m%s\033[0m", menu_start_row - 1, logo_start, menu_title);
+    }
 
     for (int i = 0; i < count; i++) {
         printf("\033[%d;%dH", menu_start_row + i, logo_start + 2);
@@ -1483,6 +1488,37 @@ static const char *BASH_PROFILE_CONTENT =
     "  exec startx\n"
     "fi\n";
 
+static int install_tor_browser(void) {
+    const char *options[] = {
+        "Yes",
+        "No"
+    };
+
+    menu_title = "Install Tor Browser?";
+    int selected = select_from_menu(options, 2);
+    menu_title = NULL;
+
+    if (selected != 0) {
+        return 1;
+    }
+
+    int rows, cols;
+    get_terminal_size(&rows, &cols);
+    clear_screen();
+    draw_logo(cols);
+
+    LOG_INFO("Installing Tor Browser");
+    int result = system("arch-chroot /mnt /bin/bash -c 'sudo pacman -Sy tor-browser'");
+    if (result != 0) {
+        LOG_ERROR("Tor Browser installation failed (exit %d)", result);
+        show_message("Failed to install Tor Browser");
+        return 0;
+    }
+
+    show_message("Tor Browser installed successfully!");
+    return 1;
+}
+
 static int configure_xfce(const char *username) {
     char cmd[4096];
     int rows, cols;
@@ -1653,12 +1689,14 @@ int main(void) {
         CHECK_OR_FAIL(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 0), "Failed to configure system");
         CHECK_OR_FAIL(install_bootloader(disk), "Failed to install bootloader");
         configure_xfce(username);
+        CHECK_OR_FAIL(install_tor_browser(), "Failed to install Tor Browser");
     } else {
         CHECK_OR_FAIL(partition_disk(disk), "Failed to partition disk");
         CHECK_OR_FAIL(install_packages_impl(OXWM_PACKAGES), "Failed to install packages");
         CHECK_OR_FAIL(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 0), "Failed to configure system");
         CHECK_OR_FAIL(install_bootloader(disk), "Failed to install bootloader");
         configure_oxwm(username);
+        CHECK_OR_FAIL(install_tor_browser(), "Failed to install Tor Browser");
     }
 
     system("cp /tmp/tonarchy-install.log /mnt/var/log/tonarchy-install.log");
