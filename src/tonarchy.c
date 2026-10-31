@@ -27,7 +27,11 @@ enum Terminal_Size {
 
 static const char *XFCE_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xrandr xorg-xset xfce4 xfce4-goodies xfce4-session xfce4-whiskermenu-plugin thunar thunar-archive-plugin file-roller firefox alacritty vlc evince eog fastfetch rofi ripgrep fd ttf-iosevka-nerd ttf-jetbrains-mono-nerd pavucontrol";
 
-static const char *OXWM_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr xorg-xset libx11 libxft libxinerama freetype2 fontconfig pkg-config lua firefox alacritty vlc evince eog zig ttf-iosevka-nerd ttf-jetbrains-mono-nerd picom xclip xwallpaper maim rofi pulseaudio pulseaudio-alsa pavucontrol alsa-utils fastfetch ripgrep fd pcmanfm lxappearance papirus-icon-theme gnome-themes-extra";
+/// we need to check that the zig package is always compatible with upstream OXWM needed zig version.
+// so it must be included later so the correct version is installed, and not the one that is in the base packages.
+
+
+static const char *OXWM_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr xorg-xset libx11 libxft libxinerama freetype2 fontconfig pkg-config lua firefox alacritty vlc evince eog ttf-iosevka-nerd ttf-jetbrains-mono-nerd picom xclip xwallpaper maim rofi pulseaudio pulseaudio-alsa pavucontrol alsa-utils fastfetch ripgrep fd pcmanfm lxappearance papirus-icon-theme gnome-themes-extra";
 
 static int is_uefi_system(void) {
     struct stat st;
@@ -1463,6 +1467,144 @@ static int setup_autologin(const char *username) {
     return 1;
 }
 
+static void trim_whitespace(char *s) {
+    if (!s) {
+        return;
+    }
+
+    size_t len = strlen(s);
+    while (len > 0 && isspace((unsigned char)s[len - 1])) {
+        s[--len] = '\0';
+    }
+
+    size_t start = 0;
+    while (s[start] && isspace((unsigned char)s[start])) {
+        start++;
+    }
+
+    if (start > 0) {
+        memmove(s, s + start, strlen(s + start) + 1);
+    }
+}
+
+static int extract_quoted_value(const char *line, char *out, size_t out_size) {
+    const char *start = strchr(line, '"');
+    if (!start) {
+        return 0;
+    }
+
+    start++;
+    const char *end = strchr(start, '"');
+    if (!end) {
+        return 0;
+    }
+
+    size_t len = (size_t)(end - start);
+    if (len == 0 || len >= out_size) {
+        return 0;
+    }
+
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return 1;
+}
+
+static int read_oxwm_zig_version(const char *repo_root, char *version, size_t version_size) {
+    char path[512];
+    char line[512];
+
+    snprintf(path, sizeof(path), "%s/build.zig.zon", repo_root);
+    LOG_INFO("Reading OXWM Zig version from: %s", path);
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        LOG_ERROR("Failed to open build.zig.zon at: %s", path);
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "minimum_zig_version")) {
+            LOG_DEBUG("Found minimum_zig_version line: %s", line);
+            if (extract_quoted_value(line, version, version_size)) {
+                trim_whitespace(version);
+                LOG_INFO("Parsed minimum_zig_version: %s", version);
+                fclose(fp);
+                return 1;
+            }
+            LOG_WARN("Failed to parse minimum_zig_version from build.zig.zon line");
+        }
+    }
+
+    LOG_WARN("minimum_zig_version key not found in build.zig.zon");
+    fclose(fp);
+    return 0;
+}
+
+static int install_oxwm_zig(const char *oxwm_path) {
+    char repo_root[512];
+    char zig_version[128] = "";
+
+    snprintf(repo_root, sizeof(repo_root), "%s%s", CHROOT_PATH, oxwm_path);
+    LOG_INFO("Resolving Zig version for OXWM repo path: %s", repo_root);
+    if (!read_oxwm_zig_version(repo_root, zig_version, sizeof(zig_version))) {
+        LOG_WARN("No minimum_zig_version found in build.zig.zon, falling back to distro zig package");
+        return chroot_exec("pacman -S --noconfirm zig");
+    }
+
+    LOG_INFO("Installing Zig version from build.zig.zon (minimum_zig_version): %s", zig_version);
+
+    if (!chroot_exec("mkdir -p /opt /usr/local/bin")) {
+        LOG_ERROR("Failed to prepare Zig install directories in chroot");
+        return 0;
+    }
+
+    if (!chroot_exec_fmt(
+            "set -e; "
+            "ZIG_VERSION=\"%s\"; "
+            "ARCH=\"$(uname -m)\"; "
+            "case \"$ARCH\" in x86_64) ZIG_ARCH=x86_64 ;; aarch64) ZIG_ARCH=aarch64 ;; *) echo Unsupported architecture: $ARCH; exit 1 ;; esac; "
+            "TMPDIR=\"$(mktemp -d)\"; "
+            "trap \"rm -rf \\\"$TMPDIR\\\"\" EXIT; "
+            "URL_PRIMARY=\"https://ziglang.org/download/$ZIG_VERSION/zig-$ZIG_ARCH-linux-$ZIG_VERSION.tar.xz\"; "
+            "URL_FALLBACK=\"https://ziglang.org/download/$ZIG_VERSION/zig-linux-$ZIG_ARCH-$ZIG_VERSION.tar.xz\"; "
+            "URL=\"\"; "
+            "for CANDIDATE in \"$URL_PRIMARY\" \"$URL_FALLBACK\"; do "
+            "  if curl -fsI \"$CANDIDATE\" > /dev/null; then URL=\"$CANDIDATE\"; break; fi; "
+            "done; "
+            "if [ -z \"$URL\" ]; then "
+            "  echo Could not resolve a valid Zig tarball URL for version $ZIG_VERSION and arch $ZIG_ARCH; "
+            "  echo Tried: $URL_PRIMARY; "
+            "  echo Tried: $URL_FALLBACK; "
+            "  exit 1; "
+            "fi; "
+            "echo Installing Zig from: $URL; "
+            "curl -fSL \"$URL\" -o \"$TMPDIR/zig.tar.xz\"; "
+            "rm -rf \"/opt/zig-$ZIG_ARCH-linux-$ZIG_VERSION\"; "
+            "rm -rf \"/opt/zig-linux-$ZIG_ARCH-$ZIG_VERSION\"; "
+            "tar -C /opt -xf \"$TMPDIR/zig.tar.xz\"; "
+            "if [ -x \"/opt/zig-$ZIG_ARCH-linux-$ZIG_VERSION/zig\" ]; then "
+            "  ln -sf \"/opt/zig-$ZIG_ARCH-linux-$ZIG_VERSION/zig\" /usr/local/bin/zig; "
+            "elif [ -x \"/opt/zig-linux-$ZIG_ARCH-$ZIG_VERSION/zig\" ]; then "
+            "  ln -sf \"/opt/zig-linux-$ZIG_ARCH-$ZIG_VERSION/zig\" /usr/local/bin/zig; "
+            "else "
+            "  echo Extracted archive did not contain expected Zig binary path; "
+            "  ls -la /opt; "
+            "  exit 1; "
+            "fi",
+            zig_version
+        )) {
+        LOG_ERROR("Failed downloading or extracting Zig version %s", zig_version);
+        return 0;
+    }
+
+    if (!chroot_exec_fmt("zig version | grep -Fx \"%s\"", zig_version)) {
+        LOG_ERROR("Zig version verification failed, expected: %s", zig_version);
+        return 0;
+    }
+
+    LOG_INFO("Zig %s installed and verified successfully", zig_version);
+    return 1;
+}
+
 static const char *BASHRC_CONTENT =
     "export PATH=\"$HOME/.local/bin:$PATH\"\n"
     "export EDITOR=\"nvim\"\n"
@@ -1544,6 +1686,12 @@ static int configure_oxwm(const char *username) {
     if (!git_clone_as_user(username, "https://github.com/tonybanters/oxwm", oxwm_path)) {
         LOG_ERROR("Failed to clone oxwm");
         show_message("Failed to clone OXWM");
+        return 0;
+    }
+
+    if (!install_oxwm_zig(oxwm_path)) {
+        LOG_ERROR("Failed to install required Zig version for OXWM");
+        show_message("Failed to install required Zig version");
         return 0;
     }
 
